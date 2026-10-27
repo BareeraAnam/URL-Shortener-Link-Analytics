@@ -1,0 +1,45 @@
+name: CI
+on: [push, pull_request]
+
+jobs:
+  unit:
+    name: Lint + unit tests (SQLite, in-memory cache)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+      - run: ruff format --check .
+      - name: Migrations are up to date
+        run: python manage.py makemigrations --check --dry-run
+        env: { DJANGO_SETTINGS_MODULE: config.settings.test }
+      - run: pytest --cov-fail-under=90
+
+  integration:
+    name: Integration tests (real PostgreSQL 16 + real Redis 7)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_USER: snipr, POSTGRES_PASSWORD: snipr, POSTGRES_DB: snipr }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U snipr" --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      RUN_INTEGRATION: "1"
+      DATABASE_URL: postgres://snipr:snipr@localhost:5432/snipr
+      REDIS_URL: redis://localhost:6379/5
+      CELERY_BROKER_URL: redis://localhost:6379/6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - run: pip install -r requirements-dev.txt
+      - run: pytest tests/integration --ds=config.settings.integration --no-cov

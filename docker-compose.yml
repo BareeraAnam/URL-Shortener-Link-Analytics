@@ -1,0 +1,39 @@
+x-app: &app
+  build: .
+  env_file: .env
+  environment:
+    DJANGO_DEBUG: "false"
+    DATABASE_URL: postgres://snipr:snipr@db:5432/snipr
+    REDIS_URL: redis://redis:6379/1
+    CELERY_BROKER_URL: redis://redis:6379/0
+    SHORT_BASE_URL: ${SHORT_BASE_URL:-http://localhost:8000}
+    DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+    SECURE_COOKIES: "false"   # set true behind HTTPS
+  volumes:
+    - ./geoip:/app/geoip
+  depends_on:
+    db: { condition: service_healthy }
+    redis: { condition: service_started }
+
+services:
+  web:
+    <<: *app
+    command: sh -c "python manage.py migrate --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 4 --access-logfile -"
+    ports: ["8000:8000"]
+  worker:
+    <<: *app
+    command: celery -A config worker -l info --concurrency 4
+  beat:
+    <<: *app
+    command: celery -A config beat -l info
+  db:
+    image: postgres:16-alpine
+    environment: { POSTGRES_USER: snipr, POSTGRES_PASSWORD: snipr, POSTGRES_DB: snipr }
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U snipr"], interval: 5s, retries: 10 }
+  redis:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+
+volumes:
+  pgdata:

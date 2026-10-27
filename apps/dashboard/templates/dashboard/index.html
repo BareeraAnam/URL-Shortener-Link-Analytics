@@ -1,0 +1,228 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}Dashboard · Snipr{% endblock %}
+{% block head %}
+{# Chart.js 4.4.1 is bundled with the project (no third-party CDN, nothing to pin with SRI). #}
+<script src="{% static 'dashboard/chart.umd.js' %}"></script>
+<style>
+  .top { display:flex; justify-content:space-between; align-items:center; padding:12px 24px; background:var(--card); border-bottom:1px solid var(--line); }
+  .top form { display:inline; margin-left:12px; }
+  .wrap { max-width:1100px; margin:24px auto; padding:0 16px; display:grid; gap:16px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:16px; }
+  .card, .panel { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; }
+  .card .n { font-size:28px; font-weight:700; } .panel h3 { margin:0 0 12px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; align-items:end; }
+  table { width:100%; border-collapse:collapse; } th,td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); font-size:14px; word-break:break-all; }
+  .charts { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:16px; }
+  .tag { font-size:11px; padding:2px 7px; border-radius:99px; background:var(--line); margin-left:4px; }
+  .st { font-size:12px; font-weight:600; padding:2px 8px; border-radius:99px; }
+  .st.active { background:rgba(22,163,74,.15); color:var(--ok); }
+  .st.expired { background:rgba(245,158,11,.18); color:#d97706; }
+  .st.disabled { background:rgba(220,38,38,.15); color:var(--bad); }
+  .pager { display:flex; gap:10px; align-items:center; justify-content:space-between; margin-top:12px; flex-wrap:wrap; }
+  dialog { border:1px solid var(--line); border-radius:14px; background:var(--card); color:var(--ink); text-align:center; }
+</style>
+{% endblock %}
+{% block body %}
+<header class="top">
+  <strong>🔗 Snipr</strong>
+  <span>{{ request.user.username }}
+    <form method="post" action="{% url 'logout' %}">{% csrf_token %}<button class="btn ghost small">Logout</button></form>
+  </span>
+</header>
+<main class="wrap">
+  <section class="cards">
+    <div class="card"><div class="muted">Clicks (30d)</div><div class="n" id="st-clicks">–</div></div>
+    <div class="card" title="Unique visitors are counted per day and summed, so the same person returning on another day counts again."><div class="muted">Daily uniques (30d)</div><div class="n" id="st-unique">–</div></div>
+    <div class="card"><div class="muted">Active links</div><div class="n" id="st-links">–</div></div>
+    <div class="card"><div class="muted">Top link</div><div class="n" id="st-top" style="font-size:20px">–</div></div>
+  </section>
+
+  <section class="panel">
+    <h3>Create short link</h3>
+    <form id="create-form" class="grid">
+      <div><label>Destination URL</label><input name="original_url" type="url" required placeholder="https://example.com/long/page"></div>
+      <div><label>Custom slug (optional)</label><input name="slug" placeholder="my-link" pattern="[A-Za-z0-9_-]{3,32}"></div>
+      <div><label>Title</label><input name="title" maxlength="200"></div>
+      <div><label>Password (optional)</label><input name="password" type="password" autocomplete="new-password"></div>
+      <div><label>Expires at (optional)</label><input name="expires_at" type="datetime-local"></div>
+      <div><button class="btn" type="submit">Create</button></div>
+    </form>
+    <p id="create-msg" class="muted"></p>
+    <hr style="border:0;border-top:1px solid var(--line)">
+    <div class="grid">
+      <div><label>Bulk import CSV (original_url,slug,title,expires_at,password)</label><input type="file" id="csv" accept=".csv"></div>
+      <div><button class="btn ghost" id="csv-btn" type="button">Import CSV</button></div>
+    </div>
+    <p id="csv-msg" class="muted"></p>
+  </section>
+
+  <section class="panel"><h3>Clicks — last 30 days</h3><canvas id="ch-overview" height="90"></canvas></section>
+
+  <section class="panel">
+    <h3>Your links <span class="muted" id="links-count" style="font-weight:400;font-size:13px"></span></h3>
+    <input id="search" type="search" placeholder="Search slug, title or URL…" style="max-width:320px;margin-bottom:10px">
+    <table><thead><tr><th>Link</th><th>Destination</th><th>Clicks</th><th>Status</th><th></th></tr></thead>
+    <tbody id="links"></tbody></table>
+    <div class="pager">
+      <button class="btn ghost small" id="prev" type="button">← Previous</button>
+      <span class="muted" id="page-info"></span>
+      <button class="btn ghost small" id="next" type="button">Next →</button>
+    </div>
+  </section>
+
+  <section class="panel" id="detail" hidden>
+    <h3 id="detail-title"></h3>
+    <canvas id="ch-ts" height="80"></canvas>
+    <div class="charts" style="margin-top:16px">
+      <div><h4>Browsers</h4><canvas id="ch-browsers"></canvas></div>
+      <div><h4>Operating systems</h4><canvas id="ch-os"></canvas></div>
+      <div><h4>Countries</h4><canvas id="ch-countries"></canvas></div>
+      <div><h4>Referrers</h4><canvas id="ch-referrers"></canvas></div>
+    </div>
+  </section>
+</main>
+<dialog id="qr"><img id="qr-img" alt="QR code" width="240" height="240"><p><a id="qr-dl" class="btn small" download>Download PNG</a>
+  <button class="btn ghost small" onclick="document.getElementById('qr').close()">Close</button></p></dialog>
+
+<script>
+const PAGE_SIZE = {{ page_size }};
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const csrf = () => (document.cookie.match(/csrftoken=([^;]+)/) || [])[1] || "";
+const charts = {};
+let current = null;   // link whose stats panel is open
+let page = 1;         // current page of the links table
+let query = "";       // current search text
+
+// Real status of a link: disabled / expired / active
+const statusOf = (l) => !l.is_active ? "disabled" : (l.expires_at && new Date(l.expires_at) <= new Date() ? "expired" : "active");
+
+async function api(path, opts = {}) {
+  const headers = Object.assign({ "X-CSRFToken": csrf() }, opts.headers || {});
+  const res = await fetch(path, Object.assign({ credentials: "same-origin" }, opts, { headers }));
+  const data = res.status === 204 ? null : await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(JSON.stringify(data));
+  return data;
+}
+
+function draw(id, type, labels, data, label) {
+  if (charts[id]) charts[id].destroy();
+  charts[id] = new Chart($(id), {
+    type, data: { labels, datasets: [{ label, data, borderColor: "#4f46e5", backgroundColor: type === "line" ? "rgba(79,70,229,.15)" : ["#4f46e5","#06b6d4","#f59e0b","#ef4444","#10b981","#8b5cf6","#ec4899","#64748b"], fill: type === "line", tension: .3 }] },
+    options: { animation: false, plugins: { legend: { display: type === "doughnut" } }, scales: type === "doughnut" ? {} : { y: { beginAtZero: true, ticks: { precision: 0 } } } },
+  });
+}
+
+async function loadOverview() {
+  const o = await api("/api/analytics/overview/?days=30");
+  $("st-clicks").textContent = o.total_clicks; $("st-unique").textContent = o.daily_unique_visitors;
+  $("st-links").textContent = o.links.active; $("st-top").textContent = o.top_links[0] ? "/" + o.top_links[0].slug : "–";
+  draw("ch-overview", "line", o.timeseries.map((d) => d.date.slice(5)), o.timeseries.map((d) => d.clicks), "Clicks");
+}
+
+async function fetchLinks() {
+  const url = `/api/links/?ordering=-created_at&page=${page}` + (query ? `&search=${encodeURIComponent(query)}` : "");
+  try { return await api(url); }
+  catch (err) {
+    if (page > 1) { page = 1; return api(url.replace(/page=\d+/, "page=1")); } // page vanished after a delete
+    throw err;
+  }
+}
+
+async function loadLinks() {
+  const data = await fetchLinks();
+  const pages = Math.max(1, Math.ceil(data.count / PAGE_SIZE));
+  $("links-count").textContent = `(${data.count})`;
+  $("page-info").textContent = `Page ${page} of ${pages}`;
+  $("prev").disabled = page <= 1; $("next").disabled = !data.next;
+  $("links").innerHTML = data.results.map((l) => {
+    const st = statusOf(l);
+    const exp = l.expires_at ? '<br><small class="muted">' + (st === "expired" ? "expired " : "expires ") + esc(new Date(l.expires_at).toLocaleString()) + "</small>" : "";
+    return `
+    <tr><td><a href="${esc(l.short_url)}" target="_blank" rel="noopener">/${esc(l.slug)}</a>
+        ${l.has_password ? '<span class="tag">🔒</span>' : ""}<br><small class="muted">${esc(l.title)}</small></td>
+      <td>${esc(l.original_url)}</td><td>${l.click_count}</td>
+      <td><span class="st ${st}">${st}</span>${exp}</td>
+      <td><button class="btn small" data-a="stats" data-id="${l.id}" data-slug="${esc(l.slug)}">Stats</button>
+          <button class="btn ghost small" data-a="qr" data-id="${l.id}">QR</button>
+          <button class="btn ghost small" data-a="copy" data-url="${esc(l.short_url)}">Copy</button>
+          <button class="btn danger small" data-a="del" data-id="${l.id}">Delete</button></td></tr>`;
+  }).join("") || `<tr><td colspan="5" class="muted">${query ? "No links match your search." : "No links yet — create your first one above."}</td></tr>`;
+}
+
+async function showStats(id, slug, scroll = true) {
+  current = { id, slug };
+  const r = await api(`/api/links/${id}/analytics/?days=30`);
+  $("detail").hidden = false;
+  $("detail-title").textContent = `/${slug} — ${r.total_clicks} clicks, ${r.daily_unique_visitors} daily uniques`;
+  draw("ch-ts", "line", r.timeseries.map((d) => d.date.slice(5)), r.timeseries.map((d) => d.clicks), "Clicks");
+  for (const [k, id2] of [["browsers", "ch-browsers"], ["operating_systems", "ch-os"], ["countries", "ch-countries"], ["referrers", "ch-referrers"]])
+    draw(id2, "doughnut", r[k].map((x) => x.label), r[k].map((x) => x.clicks), k);
+  if (scroll) $("detail").scrollIntoView({ behavior: "smooth" });
+}
+
+$("links").addEventListener("click", async (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  const { a, id, slug, url } = b.dataset;
+  try {
+    if (a === "stats") await showStats(id, slug);
+    if (a === "qr") { $("qr-img").src = `/api/links/${id}/qr/?size=8`; $("qr-dl").href = `/api/links/${id}/qr/?size=12&download=1`; $("qr").showModal(); }
+    if (a === "copy") { await navigator.clipboard.writeText(url); b.textContent = "Copied!"; }
+    if (a === "del" && confirm("Delete this link and all its analytics?")) {
+      await api(`/api/links/${id}/`, { method: "DELETE" });
+      if (current && String(current.id) === String(id)) { current = null; $("detail").hidden = true; }
+      await refresh();
+    }
+  } catch (err) { alert(err.message); }
+});
+
+$("prev").addEventListener("click", () => { if (page > 1) { page--; refresh(); } });
+$("next").addEventListener("click", () => { page++; refresh(); });
+let searchTimer;
+$("search").addEventListener("input", (e) => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => { query = e.target.value.trim(); page = 1; refresh(); }, 300);
+});
+
+$("create-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const body = Object.fromEntries([...new FormData(e.target)].filter(([, v]) => v !== ""));
+  if (body.expires_at) body.expires_at = new Date(body.expires_at).toISOString();
+  try {
+    const l = await api("/api/links/", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    $("create-msg").textContent = "Created: " + l.short_url; e.target.reset(); page = 1; await refresh();
+  } catch (err) { $("create-msg").textContent = "Error: " + err.message; }
+});
+
+$("csv-btn").addEventListener("click", async () => {
+  const btn = $("csv-btn");
+  const f = $("csv").files[0];
+  if (!f) { $("csv-msg").textContent = "Choose a CSV file first."; return; }
+  btn.disabled = true;
+  $("csv-msg").textContent = "Uploading…";
+  const fd = new FormData(); fd.append("file", f);
+  try {
+    let job = await api("/api/links/bulk-import/", { method: "POST", body: fd });
+    // Large imports can take a while: poll for up to ~2 minutes and show live progress.
+    for (let i = 0; i < 120 && ["pending", "processing"].includes(job.status); i++) {
+      $("csv-msg").textContent = `Processing… ${job.success_count} created, ${job.failed_count} failed (of ${job.total_rows} rows)`;
+      await new Promise((r) => setTimeout(r, 1000));
+      job = await api(`/api/links/bulk-import/${job.id}/`);
+    }
+    const note = ["pending", "processing"].includes(job.status) ? " Still running in the background — check back shortly." : "";
+    $("csv-msg").textContent = `[${new Date().toLocaleTimeString()}] Import ${job.status}: ${job.success_count} created, ${job.failed_count} failed.` + note + (job.errors.length ? " Errors: " + JSON.stringify(job.errors) : "");
+    $("csv").value = "";
+    page = 1; await refresh();
+  } catch (err) { $("csv-msg").textContent = "Error: " + err.message; }
+  finally { btn.disabled = false; }
+});
+
+const refresh = () => Promise.all([loadOverview(), loadLinks(), current ? showStats(current.id, current.slug, false) : null]);
+refresh();
+
+// Refresh every 5 seconds while the tab is visible.
+setInterval(() => { if (!document.hidden) refresh().catch(() => {}); }, 5000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh().catch(() => {}); });
+</script>
+{% endblock %}

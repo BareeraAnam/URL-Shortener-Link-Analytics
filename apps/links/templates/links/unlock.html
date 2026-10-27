@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Protected link{% endblock %}
+{% block body %}
+<div class="center"><div class="box">
+  <h1>🔒 This link is protected</h1>
+  <p class="muted">Enter the password to continue to <strong>/{{ slug }}</strong>.</p>
+  <form method="post">{% csrf_token %}
+    <p><input type="password" name="password" placeholder="Password" autofocus required></p>
+    {% if error %}<p class="err">{{ error }}</p>{% endif %}
+    <button class="btn" type="submit">Unlock</button>
+  </form>
+</div></div>
+{% endblock %}

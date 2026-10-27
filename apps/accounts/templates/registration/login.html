@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Sign in · Snipr{% endblock %}
+{% block body %}
+<div class="center"><div class="box">
+  <h1>🔗 Sign in to Snipr</h1>
+  <form method="post">{% csrf_token %}
+    {{ form.as_p }}
+    <button class="btn" type="submit">Sign in</button>
+  </form>
+  <p class="muted">No account? <a href="{% url 'register' %}">Create one</a></p>
+</div></div>
+{% endblock %}

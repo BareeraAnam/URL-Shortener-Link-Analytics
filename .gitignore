@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.env
+db.sqlite3
+staticfiles/
+geoip/*.mmdb
+.coverage
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+.venv/
+celerybeat-schedule*
