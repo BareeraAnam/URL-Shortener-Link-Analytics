@@ -1,6 +1,7 @@
 x-app: &app
   build: .
   env_file: .env
+  restart: unless-stopped
   environment:
     DJANGO_DEBUG: "false"
     DATABASE_URL: postgres://snipr:snipr@db:5432/snipr
