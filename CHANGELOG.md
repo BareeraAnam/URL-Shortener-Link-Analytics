@@ -24,3 +24,15 @@ Maintainability / testing
 * CI: `ruff format --check`, migration check, and a Postgres 16 + Redis 7 integration job.
 
 Migrations to run on an existing database: `analytics.0002_click_click_id`, `links.0002_link_link_slug_ci_unique` (data is preserved).
+
+## v2.1 - follow-ups
+
+Deployment
+12. Redis is split: `redis-cache` (allkeys-lru) for cache and rate limits, `redis-broker` (noeviction, AOF) for Celery, so queued click and import tasks are never evicted.
+13. `migrate` runs as its own one-shot compose service; web, worker and beat wait for it (no migration race with several replicas).
+14. The web container has a healthcheck that calls `/health/` (200 when the cache probe works, 503 otherwise).
+Admin
+15. The link admin hashes a plain password typed into the password box (it used to be stored as plain text and could never be unlocked).
+
+Docs
+* "Known limitations" now lists the login lockout trade-off, the soft `MAX_LINKS_PER_USER` cap and shared hashes in bulk imports.

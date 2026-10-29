@@ -32,11 +32,14 @@ Without Redis the app still redirects (falls back to the DB). Without a Celery w
 
 GeoIP (country): `MAXMIND_LICENSE_KEY=xxx python manage.py download_geoip` (free key). Without it countries show "Unknown".
 
-## Docker (web + worker + beat + Postgres + Redis)
+## Docker (web + worker + beat + migrate + Postgres + Redis cache + Redis broker)
 ```bash
-cp .env.example .env && docker compose up --build
+cp .env.example .env && docker compose up -d --build
+docker compose ps
 docker compose exec web python manage.py createsuperuser
+docker compose down
 ```
+`migrate` runs once as its own service before web, worker and beat start. There are two Redis instances: `redis-cache` (allkeys-lru) for cache and rate limits, and `redis-broker` (noeviction, AOF) for Celery, so queued click and import tasks are never evicted. The web container is health-checked through `/health/`.
 
 ## API (all under `/api`, JWT `Authorization: Bearer <token>` or session)
 | Method | Path | Purpose |
@@ -79,6 +82,7 @@ CI (`.github/workflows/ci.yml`) runs two jobs: lint + format + migration check +
 * **Cache invalidation**: save/delete signals delete the key immediately and again on commit (closes the read-race).
 * **Resilience**: Redis down -> DB fallback; broker down -> redirect still works; limiter errors -> fail open.
 * **Abuse protection**: only http(s) destinations, no credentials, no localhost/private/reserved IPs (including obfuscated forms like `2130706433`, `0x7f000001`, `127.1`, IPv4-mapped IPv6), own-domain/blocklist (loop and phishing guard), per-IP/user rate limits, brute-force limit on unlock.
+* **Admin passwords are hashed**: a plain password typed into the link admin's password box is hashed on save (the field stores a hash, and a plain value could never be unlocked).
 * **Scaling notes**: nginx/CDN in front (`NUM_PROXIES`), PgBouncer, partition `Click` by month at very large scale, optionally batch `click_count` updates via Redis `INCR` + periodic flush.
 
 Rate limits use `django-ratelimit` fixed windows, so a burst that straddles a window boundary can briefly pass up to roughly twice the configured rate.
@@ -94,3 +98,6 @@ If two existing slugs differ only by case (e.g. `Promo` / `promo`), `migrate` st
 ## Known limitations
 * Real `QuerySet.delete()` of many links fires one cache invalidation per row (acceptable at this scale).
 * Unique visitors cannot be counted across days without storing a stable identifier, which this project deliberately avoids.
+* **Login lockout is a deliberate trade-off.** Login attempts are limited per IP and per username (`LOGIN_RATE_LIMIT`, default 10/m), so anyone can lock a known username out for up to a minute by sending wrong passwords. This is accepted as a mild, self-expiring cost of brute-force protection.
+* **`MAX_LINKS_PER_USER` is a soft cap.** The check counts existing links and then inserts, so parallel requests can exceed it slightly. Do not treat it as a hard quota.
+* **Shared password hashes in bulk imports.** Links in one import that share a password get an identical hash (including the salt), because each distinct password is hashed once per job. This only reveals which links share a password, and only to someone who already has database access.
