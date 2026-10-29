@@ -4,8 +4,8 @@ x-app: &app
   environment:
     DJANGO_DEBUG: "false"
     DATABASE_URL: postgres://snipr:snipr@db:5432/snipr
-    REDIS_URL: redis://redis:6379/1
-    CELERY_BROKER_URL: redis://redis:6379/0
+    REDIS_URL: redis://redis-cache:6379/1
+    CELERY_BROKER_URL: redis://redis-broker:6379/0
     SHORT_BASE_URL: ${SHORT_BASE_URL:-http://localhost:8000}
     DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
     SECURE_COOKIES: "false"   # set true behind HTTPS
@@ -13,13 +13,27 @@ x-app: &app
     - ./geoip:/app/geoip
   depends_on:
     db: { condition: service_healthy }
-    redis: { condition: service_started }
+    redis-cache: { condition: service_healthy }
+    redis-broker: { condition: service_healthy }
+    migrate: { condition: service_completed_successfully }
 
 services:
+  migrate:
+    <<: *app
+    command: python manage.py migrate --noinput
+    restart: "no"
+    depends_on:
+      db: { condition: service_healthy }
   web:
     <<: *app
-    command: sh -c "python manage.py migrate --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 4 --access-logfile -"
+    command: gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 4 --access-logfile -
     ports: ["8000:8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
   worker:
     <<: *app
     command: celery -A config worker -l info --concurrency 4
@@ -31,9 +45,18 @@ services:
     environment: { POSTGRES_USER: snipr, POSTGRES_PASSWORD: snipr, POSTGRES_DB: snipr }
     volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck: { test: ["CMD-SHELL", "pg_isready -U snipr"], interval: 5s, retries: 10 }
-  redis:
+  # Cache: may evict old keys under memory pressure (safe, it is only a cache).
+  redis-cache:
     image: redis:7-alpine
     command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 5s, retries: 10 }
+  # Broker: queued click/import tasks must never be evicted.
+  redis-broker:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory-policy noeviction
+    volumes: [brokerdata:/data]
+    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 5s, retries: 10 }
 
 volumes:
   pgdata:
+  brokerdata:
